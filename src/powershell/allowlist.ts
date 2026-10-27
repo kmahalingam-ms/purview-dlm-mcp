@@ -376,7 +376,13 @@ export function buildValidatedCommand(command: string): string {
             throw 'Dynamic invocation and dot sourcing are not allowed'
           }
           $name = $name.ToLowerInvariant()
-          if ($aliases.ContainsKey($name)) { $name = $aliases[$name] }
+          if ($aliases.ContainsKey($name)) {
+            $alias = $ExecutionContext.InvokeCommand.GetCommand($name, [System.Management.Automation.CommandTypes]::Alias)
+            if ($null -eq $alias -or $alias.ResolvedCommand.Name -ine $aliases[$name]) {
+              throw "Alias '$name' is not allowed in this session; use '$($aliases[$name])'"
+            }
+            $name = $aliases[$name]
+          }
           if ($name -notin $allowed) { throw "Unknown cmdlet: $name - not in the allowlist" }
           $elements = @($node.CommandElements | Select-Object -Skip 1)
           if ($name -eq 'get-childitem' -and

@@ -25,7 +25,11 @@ describe("CmdletAllowlist", () => {
   });
 
   describe("PowerShell AST execution guard", () => {
-    function runGuarded(...commands: string[]): { success: boolean; output?: unknown[]; error?: string } {
+    function runGuarded(
+      command: string | string[],
+      setup = "",
+    ): { success: boolean; output?: unknown[]; error?: string } {
+      const commands = typeof command === "string" ? [command] : command;
       const script = `
         $ErrorActionPreference = 'Stop'
         function Get-Mailbox {
@@ -40,6 +44,7 @@ describe("CmdletAllowlist", () => {
           param($FilePath, $Variable, [Parameter(ValueFromPipeline)] $InputObject)
           process { $InputObject }
         }
+        ${setup}
         try {
           $output = @(
             ${commands.map(buildValidatedCommand).join("\n")}
@@ -49,12 +54,17 @@ describe("CmdletAllowlist", () => {
           @{ success = $false; error = $_.Exception.Message } | ConvertTo-Json -Compress
         }
       `;
-      const output = execFileSync("pwsh", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "-"], {
-        input: script + "\n\n",
-        encoding: "utf8",
-        timeout: 15_000,
-        windowsHide: true,
-      });
+      const output = execFileSync(
+        "pwsh",
+        [
+          "-NoLogo",
+          "-NoProfile",
+          "-NonInteractive",
+          "-Command",
+          "& ([scriptblock]::Create([Console]::In.ReadToEnd()))",
+        ],
+        { input: script, encoding: "utf8", timeout: 15_000, windowsHide: true },
+      );
       return JSON.parse(output.trim());
     }
 
@@ -126,8 +136,21 @@ describe("CmdletAllowlist", () => {
     });
 
     test("preserves diagnostic variables across commands without exposing validator state", () => {
-      const result = runGuarded("$mailbox = Get-Mailbox", "Write-Output $mailbox.Name; Write-Output ($null -eq $ast)");
+      const result = runGuarded([
+        "$mailbox = Get-Mailbox",
+        "Write-Output $mailbox.Name; Write-Output ($null -eq $ast)",
+      ]);
       expect(result).toEqual({ success: true, output: ["test", true] });
+    });
+
+    test.each([
+      "Remove-Alias -Name sort -Force -ErrorAction SilentlyContinue; function sort { Write-Output unexpected }",
+      "Set-Alias -Name sort -Value Write-Output -Force",
+    ])("rejects unavailable or retargeted aliases: %s", (setup) => {
+      expect(runGuarded("Get-Mailbox | sort Name", setup)).toMatchObject({
+        success: false,
+        error: "Alias 'sort' is not allowed in this session; use 'sort-object'",
+      });
     });
   });
 
